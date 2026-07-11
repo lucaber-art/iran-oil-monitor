@@ -1,0 +1,29 @@
+name: Iran Oil Monitor
+
+on:
+  schedule:
+    # Ogni 15 minuti
+    - cron: '*/15 * * * *'
+  workflow_dispatch:  # Permette avvio manuale per test
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run news monitor
+        env:
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python news_monitor.py
