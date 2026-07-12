@@ -10,7 +10,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # Query semplificata
 SEARCH_QUERY = "Iran AND (oil OR war OR sanctions OR Hormuz OR tanker OR attack OR crude)"
 LANGUAGE = "en"
-HOURS_BACK = 48  # Aumentato a 48 ore per il debug
+HOURS_BACK = 4  # Aumentato a 48 ore per il debug
 
 # Keyword che indicano impatto sul prezzo del petrolio
 OIL_IMPACT_KEYWORDS = [
