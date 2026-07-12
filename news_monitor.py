@@ -7,17 +7,24 @@ NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Query semplificata
+# Query di ricerca
 SEARCH_QUERY = "Iran AND (oil OR war OR sanctions OR Hormuz OR tanker OR attack OR crude)"
 LANGUAGE = "en"
-HOURS_BACK = 4  # Aumentato a 48 ore per il debug
+HOURS_BACK = 4  # ✅ Ottimizzato: solo notizie delle ultime 4 ore
 
 # Keyword che indicano impatto sul prezzo del petrolio
 OIL_IMPACT_KEYWORDS = [
     "oil", "crude", "brent", "wti", "petroleum", "barrel", "sanction",
     "tanker", "hormuz", "export", "opec", "pipeline", "refinery",
     "embargo", "blockade", "attack", "strike", "war", "conflict",
-    "surge", "spike", "price", "market"
+    "surge", "spike", "price", "market", "tehran"
+]
+
+# Parole chiave per escludere articoli non pertinenti (falsi positivi)
+EXCLUDE_KEYWORDS = [
+    "kushinagar", "air force one", "ram temple", "modi", "airfare",
+    "cryptocurrency", "crypto", "boomerang", "twitter", "censor",
+    "referee", "world cup", "fifa", "bollywood", "nfl", "nba"
 ]
 
 def translate_to_italian(text):
@@ -46,7 +53,7 @@ def fetch_news():
         "q": SEARCH_QUERY,
         "language": LANGUAGE,
         "sortBy": "publishedAt",
-        "pageSize": 100,
+        "pageSize": 50,  # Ridotto da 100 a 50 per velocità
         "apiKey": NEWS_API_KEY
     }
     
@@ -55,19 +62,18 @@ def fetch_news():
     data = response.json()
     
     if data.get("status") != "ok":
-        print(f"⚠️ NewsAPI status not ok: {data}")
+        print(f"⚠️ NewsAPI error: {data}")
         raise Exception(f"NewsAPI error: {data.get('message')}")
     
     return data.get("articles", [])
 
 def parse_date(published_str):
-    """Fa il parsing della data in vari formati"""
+    """Fa il parsing della data"""
     formats = [
         "%Y-%m-%dT%H:%M:%SZ",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M:%S%z",
-        "%Y-%m-%dT%H:%M:%S.%fZ",
-        "%Y-%m-%dT%H:%M:%S.%f%z"
+        "%Y-%m-%dT%H:%M:%S.%fZ"
     ]
     
     for fmt in formats:
@@ -80,61 +86,38 @@ def parse_date(published_str):
             continue
     return None
 
-def is_recent(published_str, hours=48):
+def is_recent(published_str, hours=4):
     """Controlla se l'articolo è stato pubblicato nelle ultime X ore"""
     pub_date = parse_date(published_str)
     if pub_date is None:
-        print(f"  ⚠️ Errore parsing data: {published_str}")
-        return True  # Includiamo per sicurezza
+        return True  # Se non possiamo parsare la data, includiamo per sicurezza
     
     cutoff_date = datetime.now(timezone.utc) - timedelta(hours=hours)
-    is_recent = pub_date >= cutoff_date
-    
-    if not is_recent:
-        print(f"  ❌ Troppo vecchio: {published_str} (cutoff: {cutoff_date.isoformat()})")
-    
-    return is_recent
+    return pub_date >= cutoff_date
 
-def filter_relevant_articles(articles, debug=True):
+def filter_relevant_articles(articles):
     """Filtra solo articoli recenti e rilevanti per il petrolio"""
     relevant = []
     
-    for i, article in enumerate(articles[:10]):  # Debug: solo i primi 10
-        title = article.get('title', 'N/A')
-        published = article.get('publishedAt', 'N/A')
-        description = article.get('description', '') or ''
-        
-        print(f"\n--- Articolo {i+1} ---")
-        print(f"Titolo: {title[:80]}")
-        print(f"Data: {published}")
-        
-        # Filtro 1: data
-        if not is_recent(published, HOURS_BACK):
-            print(f"  ❌ Scartato: troppo vecchio")
-            continue
-        
-        # Filtro 2: keyword
-        text = f"{title} {description}".lower()
-        found_keywords = [kw for kw in OIL_IMPACT_KEYWORDS if kw in text]
-        
-        if not found_keywords:
-            print(f"  ❌ Scartato: nessuna keyword trovata")
-            print(f"  Testo: {text[:100]}...")
-        else:
-            print(f"  ✅ Rilevante! Keyword: {found_keywords}")
-            relevant.append(article)
-    
-    # Ora filtriamo tutti gli articoli (non solo i primi 10)
-    all_relevant = []
     for article in articles:
+        # Filtro 1: deve essere recente
         if not is_recent(article.get('publishedAt', ''), HOURS_BACK):
             continue
         
-        text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+        # Filtro 2: deve contenere keyword rilevanti
+        title = article.get('title', '') or ''
+        description = article.get('description', '') or ''
+        text = f"{title} {description}".lower()
+        
+        # Filtro 3: escludi falsi positivi
+        if any(exclude in text for exclude in EXCLUDE_KEYWORDS):
+            continue
+        
+        # Filtro 4: verifica presenza keyword positive
         if any(keyword in text for keyword in OIL_IMPACT_KEYWORDS):
-            all_relevant.append(article)
+            relevant.append(article)
     
-    return all_relevant
+    return relevant
 
 def send_telegram_message(text):
     """Invia un messaggio al bot Telegram"""
@@ -150,28 +133,31 @@ def send_telegram_message(text):
 
 def main():
     print(f"[{datetime.now(timezone.utc)}] Avvio monitoraggio...")
-    print(f"Orario attuale UTC: {datetime.now(timezone.utc).isoformat()}")
-    print(f"Cutoff (ultime {HOURS_BACK} ore): {(datetime.now(timezone.utc) - timedelta(hours=HOURS_BACK)).isoformat()}")
     
     articles = fetch_news()
-    print(f"\n📊 Trovati {len(articles)} articoli totali da NewsAPI")
+    print(f"Trovati {len(articles)} articoli totali")
     
-    relevant = filter_relevant_articles(articles, debug=True)
-    print(f"\n✅ Articoli rilevanti e recenti per il petrolio: {len(relevant)}")
+    relevant = filter_relevant_articles(articles)
+    print(f"Articoli rilevanti (ultime {HOURS_BACK} ore): {len(relevant)}")
     
     if not relevant:
-        print("❌ Nessuna notizia rilevante nelle ultime ore. Esco.")
+        print("Nessuna notizia rilevante. Esco.")
         return
     
-    print(f"\n📤 Invio {len(relevant)} notifiche a Telegram...")
+    # Invia massimo 5 notizie per evitare spam
+    max_notifications = 5
+    to_send = relevant[:max_notifications]
     
-    for article in relevant[:20]:
+    print(f"Invio {len(to_send)} notifiche a Telegram...")
+    
+    for article in to_send:
         title_en = article.get("title", "Senza titolo")
         description_en = article.get("description", "") or ""
         url = article.get("url", "")
         source = article.get("source", {}).get("name", "Fonte sconosciuta")
         published = article.get("publishedAt", "")[:16].replace("T", " ")
         
+        # Traduci titolo e descrizione
         title_it = translate_to_italian(title_en)
         desc_it = translate_to_italian(description_en) if description_en else ""
         
