@@ -3,7 +3,7 @@ name: Iran Oil Monitor
 on:
   schedule:
     # Ogni 2 ore (ai minuti 0)
-    - cron: '0 */2 * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
