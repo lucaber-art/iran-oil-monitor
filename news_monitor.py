@@ -16,6 +16,7 @@ FEEDS = [
     "https://news.google.com/rss/search?q=Iran+(oil+OR+war+OR+sanctions+OR+Hormuz+OR+tanker+OR+crude+OR+attack)&hl=en&gl=US&ceid=US:en",
     "https://news.google.com/rss/search?q=%22Middle+East%22+(oil+OR+crude+OR+OPEC+OR+sanctions)&hl=en&gl=US&ceid=US:en",
     "https://www.aljazeera.com/xml/middleeast.rss",
+    "http://feeds.bbci.co.uk/news/world/middle_east/rss.xml",  # <-- NUOVO: BBC Middle East
 ]
 
 OIL_IMPACT_KEYWORDS = [
