@@ -2,8 +2,9 @@ name: Iran Oil Monitor
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
+    # Esegue ogni 2 ore (ai minuti 0) -> 12 volte al giorno (sicuro per il limite free)
+    - cron: '0 */2 * * *'
+  workflow_dispatch:  # Permette avvio manuale per test
 
 jobs:
   monitor:
@@ -21,7 +22,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --timeout 60 --retries 3 requests
-        timeout-minutes: 5
 
       - name: Run news monitor
         env:
@@ -29,4 +29,3 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python news_monitor.py
-        timeout-minutes: 10
