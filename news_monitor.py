@@ -1,30 +1,47 @@
 import os
 import requests
+import feedparser
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 # === CONFIGURAZIONE ===
-NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-SEARCH_QUERY = "Iran AND (oil OR war OR sanctions OR Hormuz OR tanker OR attack OR crude OR tehran)"
-LANGUAGE = "en"
-HOURS_BACK = 6  # Controlla le ultime 6 ore (perfetto per esecuzione ogni 2 ore)
+# Finestra temporale: controlla solo articoli delle ultime 4 ore
+HOURS_BACK = 4
 
+# Feed RSS da monitorare
+# Google News RSS permette query con keyword (come NewsAPI ma gratis!)
+FEEDS = [
+    # Google News - query mirate su Iran + petrolio/guerra
+    "https://news.google.com/rss/search?q=Iran+(oil+OR+war+OR+sanctions+OR+Hormuz+OR+tanker+OR+crude+OR+attack)&hl=en&gl=US&ceid=US:en",
+    # Google News - query più ampia sul Medio Oriente
+    "https://news.google.com/rss/search?q=%22Middle+East%22+(oil+OR+crude+OR+OPEC+OR+sanctions)&hl=en&gl=US&ceid=US:en",
+    # Reuters - World News (fonte diretta, altissima qualità)
+    "https://www.reutersagency.com/feed/",
+    # Al Jazeera - Middle East (copertura eccellente sulla regione)
+    "https://www.aljazeera.com/xml/middleeast.rss",
+]
+
+# Keyword che indicano impatto sul petrolio (per filtrare i risultati dei feed generici)
 OIL_IMPACT_KEYWORDS = [
     "oil", "crude", "brent", "wti", "petroleum", "barrel", "sanction",
     "tanker", "hormuz", "export", "opec", "pipeline", "refinery",
-    "embargo", "blockade", "attack", "strike", "war", "conflict",
-    "surge", "spike", "price", "market", "tehran"
+    "embargo", "blockade", "strike", "tehran", "iran",
+    "surge", "spike", "price", "market", "energy"
 ]
 
+# Falsi positivi da escludere
 EXCLUDE_KEYWORDS = [
     "kushinagar", "air force one", "ram temple", "modi", "airfare",
     "cryptocurrency", "crypto", "boomerang", "twitter", "censor",
-    "referee", "world cup", "fifa", "bollywood", "nfl", "nba"
+    "referee", "world cup", "fifa", "bollywood", "nfl", "nba",
+    "fashion", "celebrity", "recipe", "cooking"
 ]
 
 def translate_to_italian(text):
+    """Traduce un testo da inglese a italiano usando MyMemory API (gratis)"""
     if not text:
         return ""
     try:
@@ -38,65 +55,108 @@ def translate_to_italian(text):
         print(f"Errore traduzione: {e}")
     return text
 
-def fetch_news():
-    url = "https://newsapi.org/v2/everything"
-    params = {
-        "q": SEARCH_QUERY,
-        "language": LANGUAGE,
-        "sortBy": "publishedAt",
-        "pageSize": 50,
-        "apiKey": NEWS_API_KEY
-    }
+def parse_feed_date(date_str):
+    """Fa il parsing delle date dai feed RSS (formati diversi)"""
+    if not date_str:
+        return None
     
-    response = requests.get(url, params=params, timeout=15)
-    data = response.json()
+    # Formato standard RSS (RFC 2822)
+    try:
+        return parsedate_to_datetime(date_str)
+    except Exception:
+        pass
     
-    # CONTROLLO ERRORI NEWSAPI (es. limite superato)
-    if data.get("status") != "ok":
-        print(f"❌ ERRORE NEWSAPI: {data.get('message')}")
-        print(f"Dettaglio completo: {data}")
-        raise Exception(f"NewsAPI error: {data.get('message')}")
-    
-    return data.get("articles", [])
-
-def parse_date(published_str):
-    formats = ["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%fZ"]
-    for fmt in formats:
+    # Formato ISO (alcuni feed)
+    for fmt in ["%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"]:
         try:
-            dt = datetime.strptime(published_str, fmt)
+            dt = datetime.strptime(date_str, fmt)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
         except ValueError:
             continue
+    
     return None
 
-def is_recent(published_str, hours=6):
-    pub_date = parse_date(published_str)
+def fetch_all_feeds():
+    """Scarica e parsifica tutti i feed RSS"""
+    all_entries = []
+    
+    for feed_url in FEEDS:
+        try:
+            print(f"📡 Scaricamento feed: {feed_url[:60]}...")
+            feed = feedparser.parse(feed_url)
+            
+            if feed.bozo and not feed.entries:
+                print(f"  ⚠️ Feed non valido o vuoto")
+                continue
+            
+            source_name = feed.feed.get('title', 'Fonte sconosciuta')
+            print(f"  ✓ Trovati {len(feed.entries)} articoli da {source_name}")
+            
+            for entry in feed.entries:
+                all_entries.append({
+                    'title': entry.get('title', ''),
+                    'link': entry.get('link', ''),
+                    'description': entry.get('summary', entry.get('description', '')),
+                    'published': entry.get('published', entry.get('updated', '')),
+                    'source': source_name,
+                    'feed_url': feed_url
+                })
+        except Exception as e:
+            print(f"  ✗ Errore feed {feed_url[:50]}: {e}")
+    
+    return all_entries
+
+def is_recent(published_str, hours=4):
+    """Controlla se l'articolo è delle ultime X ore"""
+    pub_date = parse_feed_date(published_str)
     if pub_date is None:
+        # Se non riusciamo a parsare la data, includiamo per sicurezza
+        # (alcuni feed non hanno data)
         return True
+    
+    # Assicuriamoci che abbia il timezone
+    if pub_date.tzinfo is None:
+        pub_date = pub_date.replace(tzinfo=timezone.utc)
+    
     cutoff_date = datetime.now(timezone.utc) - timedelta(hours=hours)
     return pub_date >= cutoff_date
 
-def filter_relevant_articles(articles):
+def filter_articles(entries):
+    """Filtra articoli per data, keyword e falsi positivi"""
     relevant = []
-    for article in articles:
-        if not is_recent(article.get('publishedAt', ''), HOURS_BACK):
+    seen_links = set()
+    
+    for entry in entries:
+        link = entry.get('link', '')
+        
+        # Evita duplicati (stesso articolo da feed diversi)
+        if link in seen_links:
             continue
         
-        title = article.get('title', '') or ''
-        description = article.get('description', '') or ''
+        # Filtro 1: deve essere recente
+        if not is_recent(entry.get('published', ''), HOURS_BACK):
+            continue
+        
+        # Prepara il testo per il filtraggio
+        title = entry.get('title', '') or ''
+        description = entry.get('description', '') or ''
         text = f"{title} {description}".lower()
         
+        # Filtro 2: escludi falsi positivi
         if any(exclude in text for exclude in EXCLUDE_KEYWORDS):
             continue
         
+        # Filtro 3: verifica keyword positive
         if any(keyword in text for keyword in OIL_IMPACT_KEYWORDS):
-            relevant.append(article)
+            seen_links.add(link)
+            relevant.append(entry)
     
     return relevant
 
 def send_telegram_message(text):
+    """Invia un messaggio al bot Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -108,56 +168,57 @@ def send_telegram_message(text):
     response.raise_for_status()
 
 def main():
-    print(f"[{datetime.now(timezone.utc)}] Avvio monitoraggio...")
+    print(f"[{datetime.now(timezone.utc)}] Avvio monitoraggio RSS...")
+    print(f"Finestra temporale: ultime {HOURS_BACK} ore")
     
-    try:
-        articles = fetch_news()
-        print(f"Trovati {len(articles)} articoli totali")
+    # Scarica tutti i feed
+    all_entries = fetch_all_feeds()
+    print(f"\n📊 Totale articoli grezzi: {len(all_entries)}")
+    
+    # Filtra
+    relevant = filter_articles(all_entries)
+    print(f"✅ Articoli rilevanti dopo filtri: {len(relevant)}")
+    
+    if not relevant:
+        print("Nessuna notizia rilevante. Esco.")
+        return
+    
+    # Ordina per data (più recenti prima) - approssimativo
+    # Invia massimo 5 notizie per evitare spam
+    to_send = relevant[:5]
+    print(f"\n📤 Invio {len(to_send)} notifiche a Telegram...")
+    
+    for article in to_send:
+        title_en = article.get("title", "Senza titolo")
+        description_en = article.get("description", "") or ""
+        url = article.get("link", "")
+        source = article.get("source", "Fonte sconosciuta")
         
-        relevant = filter_relevant_articles(articles)
-        print(f"Articoli rilevanti (ultime {HOURS_BACK} ore): {len(relevant)}")
+        # Pulisci la descrizione (spesso contiene HTML)
+        import re
+        description_en = re.sub(r'<[^>]+>', '', description_en)
+        description_en = description_en.strip()[:300]
         
-        if not relevant:
-            print("Nessuna notizia rilevante. Esco.")
-            return
+        # Traduci
+        title_it = translate_to_italian(title_en)
+        desc_it = translate_to_italian(description_en) if description_en else ""
         
-        to_send = relevant[:5]  # Max 5 notifiche
-        print(f"Invio {len(to_send)} notifiche a Telegram...")
+        message = (
+            f"🛢️ <b>ALLERTA PETROLIO - IRAN</b>\n\n"
+            f"📰 <b>{title_it}</b>\n\n"
+        )
+        if desc_it:
+            message += f"{desc_it}\n\n"
+        message += (
+            f"🔗 <a href='{url}'>Leggi articolo originale</a>\n"
+            f"📡 Fonte: {source}"
+        )
         
-        for article in to_send:
-            title_en = article.get("title", "Senza titolo")
-            description_en = article.get("description", "") or ""
-            url = article.get("url", "")
-            source = article.get("source", {}).get("name", "Fonte sconosciuta")
-            published = article.get("publishedAt", "")[:16].replace("T", " ")
-            
-            title_it = translate_to_italian(title_en)
-            desc_it = translate_to_italian(description_en) if description_en else ""
-            
-            message = (
-                f"🛢️ <b>ALLERTA PETROLIO - IRAN</b>\n\n"
-                f"📰 <b>{title_it}</b>\n\n"
-            )
-            if desc_it:
-                message += f"{desc_it}\n\n"
-            message += (
-                f"🔗 <a href='{url}'>Leggi articolo originale</a>\n"
-                f"📡 Fonte: {source} | 🕐 {published} UTC"
-            )
-            
-            try:
-                send_telegram_message(message)
-                print(f"✓ Inviato: {title_en[:60]}...")
-            except Exception as e:
-                print(f"✗ Errore invio Telegram: {e}")
-                
-    except Exception as e:
-        print(f"❌ ERRORE CRITICO: {e}")
-        # Invia un avviso a te stesso su Telegram se il bot si rompe
         try:
-            send_telegram_message(f"🚨 <b>ERRORE BOT</b>\n\nIl monitoraggio notizie ha fallito:\n<code>{str(e)}</code>\n\nControlla i log di GitHub Actions.")
-        except:
-            pass
+            send_telegram_message(message)
+            print(f"✓ Inviato: {title_en[:60]}...")
+        except Exception as e:
+            print(f"✗ Errore invio Telegram: {e}")
 
 if __name__ == "__main__":
     main()
